@@ -1,9 +1,10 @@
-"""Single-user local app. Start with one Uvicorn worker."""
+"""Google-account studio API. Start with one Uvicorn worker."""
 
 import json
 import logging
 import os
 import re
+import secrets
 import shutil
 import threading
 import uuid
@@ -13,12 +14,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from authlib.integrations.starlette_client import OAuth
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
+from starlette.middleware.sessions import SessionMiddleware
 
-from app import pipeline
+from app import accounts, billing, pipeline
 
 ROOT = Path(__file__).resolve().parent
 DATA = Path(os.environ.get("CLIPSTUDIO_DATA", ROOT.parent / "data")).resolve()
@@ -31,10 +34,12 @@ logger = logging.getLogger("clipstudio")
 
 @asynccontextmanager
 async def lifespan(app):
+    accounts.configure(DATA)
     for path in DATA.glob("*/job.json"):
         try:
             job = json.loads(path.read_text())
             if job["status"] in {"queued", "processing", "uploading"}:
+                accounts.finish(job["id"], False)
                 job.update(status="failed", message="The app restarted during processing. Please try again.")
                 path.write_text(json.dumps(job))
             JOBS[job["id"]] = job
@@ -53,7 +58,7 @@ class Options(BaseModel):
     framing: str = "fit"
     captions: bool = True
     speed: str = Field(default="balanced", pattern="^(fast|balanced)$")
-    analysis_minutes: int = Field(default=0, ge=0, le=120)
+    analysis_minutes: int = Field(default=0, ge=0, le=1440)
     resolution: int = Field(default=1080)
 
     @field_validator("resolution")
@@ -89,7 +94,11 @@ def save(job_id: str, **changes):
         temp.replace(folder / "job.json")
 
 
-def new_job(title: str, options: Options) -> dict:
+def new_job(title: str, options: Options, user=None) -> dict:
+    if user is None:
+        if not accounts.local_mode():
+            raise HTTPException(401, "Sign in with Google to create clips.")
+        user = {"id": "local", "unlimited": True}
     if not all(pipeline.requirements()[k] for k in ("ffmpeg", "ffprobe")):
         raise HTTPException(503, "Install FFmpeg and restart the app. See the VS Code setup guide.")
     with LOCK:
@@ -97,9 +106,15 @@ def new_job(title: str, options: Options) -> dict:
             raise HTTPException(429, "Your queue is full. Wait for a video to finish, then try again.")
         job_id = uuid.uuid4().hex
         (DATA / job_id).mkdir()
+        try:
+            accounts.reserve(user, job_id)
+        except Exception:
+            (DATA / job_id).rmdir()
+            raise
         job = {
             "id": job_id,
             "title": title,
+            "owner_id": user["id"],
             "status": "queued",
             "progress": 0,
             "message": "Waiting in queue…",
@@ -155,6 +170,7 @@ def process(job_id: str, url: str | None = None, source: Path | None = None):
                     options.get("resolution", 1080),
                 )
             )
+        accounts.finish(job_id, True)
         save(
             job_id,
             status="completed",
@@ -178,6 +194,7 @@ def process(job_id: str, url: str | None = None, source: Path | None = None):
             message = "Couldn't load the speech model or media. Check your internet connection and free disk space, then retry."
         else:
             message = "Video processing failed. Check the terminal for details, confirm FFmpeg is installed, and try an MP4 file."
+        accounts.finish(job_id, False)
         save(job_id, status="failed", message=message)
     finally:
         # Keep only exports and transcript; remove large source and partial downloads.
@@ -192,16 +209,23 @@ def process(job_id: str, url: str | None = None, source: Path | None = None):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "requirements": pipeline.requirements(), "model": "Whisper base · CPU int8"}
+    return {
+        "status": "ok",
+        "requirements": pipeline.requirements(),
+        "model": "Whisper tiny/base · " + os.getenv("WHISPER_DEVICE", "cpu"),
+    }
 
 
 @app.get("/api/jobs")
-def list_jobs():
+def list_jobs(request: Request):
     with LOCK:
-        return sorted(JOBS.values(), key=lambda j: j["created"], reverse=True)
+        return sorted(
+            (j for j in JOBS.values() if owns(request.state.user, j)),
+            key=lambda j: j["created"],
+            reverse=True,
+        )
 
 
-@app.get("/api/jobs/{job_id}")
 def get_job(job_id: str):
     with LOCK:
         if job_id not in JOBS:
@@ -209,17 +233,26 @@ def get_job(job_id: str):
         return dict(JOBS[job_id])
 
 
+@app.get("/api/jobs/{job_id}")
+def read_job(job_id: str, request: Request):
+    job = get_job(job_id)
+    if not owns(request.state.user, job):
+        raise HTTPException(404, "Video not found.")
+    return job
+
+
 @app.post("/api/jobs", status_code=202)
-def create_link(request: LinkRequest):
-    job = new_job("YouTube video", request)
-    save(job["id"], source_url=request.url, video_id=request.url.split("v=")[1])
+def create_link(payload: LinkRequest, request: Request):
+    job = new_job("YouTube video", payload, request.state.user)
+    save(job["id"], source_url=payload.url, video_id=payload.url.split("v=")[1])
     job = get_job(job["id"])
-    EXECUTOR.submit(process, job["id"], url=request.url)
+    EXECUTOR.submit(process, job["id"], url=payload.url)
     return job
 
 
 @app.post("/api/uploads", status_code=202)
 async def create_upload(
+    request: Request,
     file: Annotated[UploadFile, File()],
     length: int = Form(30),
     count: int = Form(3),
@@ -245,7 +278,7 @@ async def create_upload(
     if suffix not in {".mp4", ".mov", ".mkv", ".webm", ".m4v"}:
         raise HTTPException(422, "Choose an MP4, MOV, MKV, M4V, or WebM video.")
     title = (file.filename or "Uploaded video")[:200]
-    job = new_job(title, options)
+    job = new_job(title, options, request.state.user)
     save(job["id"], status="uploading", message="Receiving your video…")
     source = DATA / job["id"] / f"upload{suffix}"
     try:
@@ -253,14 +286,15 @@ async def create_upload(
         with source.open("wb") as stream:
             while chunk := await file.read(1024 * 1024):
                 total += len(chunk)
-                if total > pipeline.MAX_BYTES:
-                    raise HTTPException(413, "This file exceeds the 750 MB upload limit.")
+                if pipeline.MAX_BYTES and total > pipeline.MAX_BYTES:
+                    raise HTTPException(413, "This file exceeds the configured upload limit.")
                 stream.write(chunk)
         if total == 0:
             raise HTTPException(422, "This file is empty. Choose a video file.")
     except BaseException:
         source.unlink(missing_ok=True)
-        save(job["id"], status="failed", message="Upload did not finish. Try a video under 750 MB.")
+        accounts.finish(job["id"], False)
+        save(job["id"], status="failed", message="Upload did not finish. Please try again.")
         raise
     finally:
         await file.close()
@@ -270,9 +304,9 @@ async def create_upload(
 
 
 @app.delete("/api/jobs/{job_id}", status_code=204)
-def delete_job(job_id: str):
+def delete_job(job_id: str, request: Request):
     with LOCK:
-        job = get_job(job_id)
+        job = read_job(job_id, request)
         if job["status"] in {"queued", "processing", "uploading"}:
             raise HTTPException(409, "Wait until processing finishes before deleting this video.")
         shutil.rmtree(DATA / job_id)
@@ -280,8 +314,8 @@ def delete_job(job_id: str):
 
 
 @app.get("/api/jobs/{job_id}/files/{filename}")
-def media_file(job_id: str, filename: str, download: bool = False):
-    job = get_job(job_id)
+def media_file(job_id: str, filename: str, request: Request, download: bool = False):
+    job = read_job(job_id, request)
     if filename == "transcript.txt" and job["status"] == "completed" and (DATA / job_id / filename).is_file():
         return FileResponse(DATA / job_id / filename, filename=filename, media_type="text/plain")
     allowed = {c[key] for c in job["clips"] for key in ("file", "poster")}
@@ -296,6 +330,186 @@ def media_file(job_id: str, filename: str, download: bool = False):
         filename=filename if download else None,
         media_type="video/mp4" if filename.endswith(".mp4") else "image/jpeg",
     )
+
+
+def owns(user, job):
+    return job.get("owner_id") == user["id"] or (
+        not job.get("owner_id") and (user.get("owner") or user.get("local"))
+    )
+
+
+@app.middleware("http")
+async def require_account(request: Request, call_next):
+    public = {"/api/health", "/api/me", "/api/config", "/api/billing/webhook"}
+    if request.method in {"POST", "PUT", "DELETE"} and request.url.path != "/api/billing/webhook":
+        origin = request.headers.get("origin")
+        expected = os.getenv("PUBLIC_URL", str(request.base_url)).rstrip("/")
+        if origin and origin != expected:
+            return JSONResponse({"detail": "Invalid request origin."}, status_code=403)
+
+    if request.url.path.startswith("/api/") and request.url.path not in public:
+        user = accounts.current(request)
+        if not user:
+            return JSONResponse({"detail": "Sign in with Google to continue."}, status_code=401)
+        request.state.user = user
+        if (
+            request.method in {"POST", "PUT"}
+            and request.url.path
+            in {
+                "/api/jobs",
+                "/api/uploads",
+                "/api/uploads/stream",
+            }
+            and not user["unlimited"]
+            and not accounts.summary(user)["trial_available"]
+        ):
+            return JSONResponse(
+                {"detail": "Your free video has been used. Choose a plan to continue."}, status_code=402
+            )
+    return await call_next(request)
+
+
+@app.get("/api/config")
+def config():
+    return {
+        "google_ready": accounts.google_ready(),
+        "local_mode": accounts.local_mode(),
+        "payments_ready": billing.ready(),
+        "max_bytes": pipeline.MAX_BYTES,
+        "max_duration": pipeline.MAX_DURATION,
+        "plans": [
+            {"id": "monthly", "price": 5, "period": "month"},
+            {"id": "yearly", "price": 60, "period": "year"},
+        ],
+    }
+
+
+@app.get("/api/me")
+def me(request: Request):
+    return accounts.summary(accounts.current(request))
+
+
+OAUTH = OAuth()
+OAUTH.register(
+    name="google",
+    client_id=os.getenv("GOOGLE_CLIENT_ID"),
+    client_secret=os.getenv("GOOGLE_CLIENT_SECRET"),
+    server_metadata_url="https://accounts.google.com/.well-known/openid-configuration",
+    client_kwargs={"scope": "openid email profile"},
+)
+
+
+@app.get("/auth/google")
+async def google_login(request: Request):
+    if not accounts.google_ready():
+        raise HTTPException(503, "Google sign-in needs configuration by the studio owner.")
+    callback = os.getenv("PUBLIC_URL", "http://127.0.0.1:8000").rstrip("/") + "/auth/callback"
+    return await OAUTH.google.authorize_redirect(request, callback)
+
+
+@app.get("/auth/callback")
+async def google_callback(request: Request):
+    try:
+        token = await OAUTH.google.authorize_access_token(request)
+        uid = accounts.register_google(token["userinfo"])
+    except Exception:  # noqa: BLE001 - provider errors must not expose token details
+        return RedirectResponse("/?login=failed", status_code=303)
+    request.session.clear()
+    request.session["token"] = accounts.new_session(uid)
+    return RedirectResponse("/", status_code=303)
+
+
+@app.post("/api/logout")
+def logout(request: Request):
+    token = request.session.get("token", "")
+    import hashlib
+
+    with accounts.database() as db:
+        db.execute("DELETE FROM sessions WHERE token=?", (hashlib.sha256(token.encode()).hexdigest(),))
+    request.session.clear()
+    return {"ok": True}
+
+
+class CheckoutRequest(BaseModel):
+    plan: str
+
+
+@app.post("/api/billing/checkout")
+async def checkout(payload: CheckoutRequest, request: Request):
+    return await billing.checkout(request.state.user, payload.plan)
+
+
+@app.post("/api/billing/portal")
+async def billing_portal(request: Request):
+    user = request.state.user
+    if not billing.ready() or not user.get("customer"):
+        raise HTTPException(400, "No subscription to manage.")
+    result = await billing.stripe(
+        "POST",
+        "/billing_portal/sessions",
+        {"customer": user["customer"], "return_url": os.environ["PUBLIC_URL"]},
+    )
+    return {"url": result["url"]}
+
+
+@app.post("/api/billing/webhook")
+async def payment_event(request: Request):
+    body = bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body) > 1024 * 1024:
+            raise HTTPException(413, "Webhook too large.")
+    body = bytes(body)
+    return await billing.webhook(body, request.headers.get("stripe-signature", ""))
+
+
+@app.put("/api/uploads/stream", status_code=202)
+async def stream_upload(request: Request, options: Annotated[Options, Query()]):
+    from urllib.parse import unquote
+
+    title = unquote(request.headers.get("x-file-name", "video.mp4"))[:200]
+    suffix = Path(title).suffix.lower()
+    if suffix not in {".mp4", ".mov", ".mkv", ".webm", ".m4v"}:
+        raise HTTPException(422, "Choose an MP4, MOV, MKV, M4V, or WebM video.")
+    job = new_job(title, options, request.state.user)
+    source = DATA / job["id"] / ("upload" + suffix)
+    save(job["id"], status="uploading", message="Receiving your video…")
+    try:
+        total = 0
+        with source.open("wb") as file:
+            async for chunk in request.stream():
+                total += len(chunk)
+                if pipeline.MAX_BYTES and total > pipeline.MAX_BYTES:
+                    raise HTTPException(413, "This video exceeds the configured upload limit.")
+                if shutil.disk_usage(DATA).free < len(chunk) + 256 * 1024 * 1024:
+                    raise HTTPException(507, "Not enough disk space for this upload.")
+                file.write(chunk)
+        if not total:
+            raise HTTPException(422, "Choose a video that is not empty.")
+    except BaseException:
+        source.unlink(missing_ok=True)
+        accounts.finish(job["id"], False)
+        save(job["id"], status="failed", message="Upload did not finish. Please retry.")
+        raise
+    save(job["id"], status="queued", message="Waiting in queue…")
+    EXECUTOR.submit(process, job["id"], source=source)
+    return get_job(job["id"])
+
+
+secret_file = DATA / "session.key"
+if not secret_file.exists():
+    try:
+        with secret_file.open("x") as file:
+            file.write(secrets.token_hex(32))
+    except FileExistsError:
+        pass
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=secret_file.read_text().strip(),
+    same_site="lax",
+    https_only=os.getenv("PUBLIC_URL", "").startswith("https://"),
+    max_age=604800,
+)
 
 
 app.mount("/", StaticFiles(directory=ROOT / "static", html=True), name="studio")

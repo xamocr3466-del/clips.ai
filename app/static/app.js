@@ -4,11 +4,14 @@ const icon = (name) => `<svg aria-hidden="true"><use href="#i-${name}"/></svg>`;
 const escapeHTML = (value) => String(value).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const state = {source:'link', length:30, count:3, captions:true, jobs:[], activeId:null, view:'create', file:null, submitting:false};
 let polling = null;
+let account = null;
+let config = {};
 let toastTimer;
 function toast(message) { $('#toast').textContent = message; $('#toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { $('#toast').hidden = true; }, 5500); }
 async function api(path, options = {}) {
   const response = await fetch(path, options);
   if (!response.ok) {
+    if (response.status === 402) $('#pricing-dialog').showModal();
     let message = `Request failed (${response.status}). Please try again.`;
     try { const data = await response.json(); message = typeof data.detail === 'string' ? data.detail : data.detail?.[0]?.msg?.replace(/^Value error, /, '') || message; } catch { /* Non-JSON server response. */ }
     throw new Error(message);
@@ -111,6 +114,7 @@ function updateProgress(job) {
 async function refresh() {
   try {
     const jobs = await api('/api/jobs');
+    await updateAccount();
     if (JSON.stringify(jobs) !== JSON.stringify(state.jobs)) { state.jobs = jobs; renderJobs(); }
     const active = jobs.find((job) => ['processing','queued','uploading'].includes(job.status));
     const previous = jobs.find((job) => job.id === state.activeId);
@@ -135,10 +139,9 @@ $('#create-form').addEventListener('submit', async (event) => {
       request = {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...options,url})};
     } else {
       if (!state.file) throw new Error('Choose a video from your computer first.');
-      if (state.file.size > 750*1024*1024) throw new Error('Choose a video smaller than 750 MB.');
-      const body = new FormData(); body.append('file',state.file);
-      Object.entries(options).forEach(([key,value]) => body.append(key,String(value)));
-      path = '/api/uploads'; request = {method:'POST',body};
+      if (config.max_bytes && state.file.size > config.max_bytes) throw new Error('This video exceeds this server’s upload limit.');
+      path = '/api/uploads/stream?' + new URLSearchParams(options);
+      request = {method:'PUT',headers:{'Content-Type':'application/octet-stream','X-File-Name':encodeURIComponent(state.file.name)},body:state.file};
     }
     state.submitting = true; $('#generate-button').disabled = true;
     $('#generate-button').innerHTML = `${icon('clock')}Sending your video…`;
@@ -150,7 +153,19 @@ $('#create-form').addEventListener('submit', async (event) => {
   finally { state.submitting = false; $('#generate-button').disabled = false; $('#generate-button').innerHTML = `${icon('spark')}Generate clips${icon('arrow')}`; }
 });
 async function init() {
-  updateCount(); await refresh();
+  updateCount();
+  config = await api('/api/config');
+  account = await api('/api/me');
+  if (!account) {
+    $('#auth-gate').hidden = false;
+    $('#auth-note').textContent = config.google_ready ? 'One Google account. No separate password needed.' : 'Google sign-in is being set up. Please check back soon.';
+    if (!config.google_ready) {
+      ['#google-signin','#google-signup'].forEach(id=> { $(id).removeAttribute('href'); $(id).setAttribute('aria-disabled','true'); });
+    }
+    return;
+  }
+  await updateAccount();
+  await refresh();
   try {
     const health = await api('/api/health');
     const ready = health.requirements.ffmpeg && health.requirements.ffprobe;
@@ -158,4 +173,29 @@ async function init() {
     if (!ready) toast('Install FFmpeg to start creating clips. See the README for setup steps.');
   } catch { $('#system-status').textContent = 'Studio is offline'; }
 }
-init();
+async function updateAccount() {
+  account = await api('/api/me');
+  if (!account) { location.reload(); return; }
+  $('#account-label').textContent = account.local ? 'PRIVATE LOCAL MODE' : account.name;
+  $('#access-status').textContent = account.owner ? 'Owner account · always free' : account.local ? 'Private local mode · no billing' : account.unlimited ? 'Subscription active · keep creating' : account.trial_available ? 'Your first video is on us.' : 'Trial complete. Choose your plan.';
+  $('#signout-button').hidden = !!account.local;
+}
+function showPlans() {
+  $('#billing-note').textContent = account?.owner ? 'Your verified owner account is free, with no subscription needed.' : config.payments_ready ? 'Secure hosted checkout. Payments are confirmed by our server.' : 'Payments are not activated yet. Please check back soon.';
+  document.querySelectorAll('[data-plan]').forEach(button=>button.disabled = !config.payments_ready || !!account?.unlimited || !!account?.local);
+  $('#manage-subscription').hidden = !account?.paid_until;
+  $('#pricing-dialog').showModal();
+}
+['#plans-button','#sidebar-plans','#auth-plans'].forEach(id=>$(id).onclick=showPlans);
+$('#manage-subscription').onclick=async()=>{try{const r=await api('/api/billing/portal',{method:'POST'});location.href=r.url;}catch(e){toast(e.message);}};
+$('#close-pricing').onclick=()=>$('#pricing-dialog').close();
+$('#signout-button').onclick=async()=>{await api('/api/logout',{method:'POST'});location.reload();};
+document.querySelectorAll('[data-plan]').forEach(button=>button.onclick=async()=>{
+  if (!account) { location.href='/auth/google'; return; }
+  button.disabled=true;
+  try { const result=await api('/api/billing/checkout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({plan:button.dataset.plan})});location.href=result.url; }
+  catch(error) { toast(error.message);button.disabled=false; }
+});
+if (new URLSearchParams(location.search).get('login') === 'failed') toast('Google sign-in could not finish. Please try again.');
+if (new URLSearchParams(location.search).get('payment') === 'received') toast('Payment received by checkout. Access updates after server confirmation.');
+init().catch(error=>toast(error.message));

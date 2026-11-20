@@ -8,11 +8,12 @@ import shutil
 import subprocess
 import time
 from collections import Counter
+from itertools import islice
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-MAX_DURATION = 7200
-MAX_BYTES = 750 * 1024 * 1024
+MAX_DURATION = int(os.getenv("CLIPSTUDIO_MAX_DURATION", "0"))
+MAX_BYTES = int(os.getenv("CLIPSTUDIO_MAX_BYTES", "0"))
 
 
 def youtube_url(value: str) -> str:
@@ -71,8 +72,8 @@ def probe(source: Path) -> dict:
     )
     streams = info.get("streams", [])
     duration = float(info.get("format", {}).get("duration", 0))
-    if not math.isfinite(duration) or not 3 <= duration <= MAX_DURATION:
-        raise ValueError("Use a video between 3 seconds and 2 hours long.")
+    if not math.isfinite(duration) or (duration < 3 or (MAX_DURATION and duration > MAX_DURATION)):
+        raise ValueError("Use a video at least 3 seconds long and within the configured duration limit.")
     if not any(s["codec_type"] == "video" for s in streams):
         raise ValueError("This file has no video track. Upload an MP4, MOV, MKV, or WebM video.")
     return {"duration": duration, "audio": any(s["codec_type"] == "audio" for s in streams)}
@@ -85,8 +86,8 @@ def download(url: str, folder: Path, progress, metadata=None) -> tuple[Path, str
         if event["status"] == "downloading":
             total = event.get("total_bytes") or event.get("total_bytes_estimate") or 0
             downloaded = event.get("downloaded_bytes", 0)
-            if downloaded > MAX_BYTES:
-                raise ValueError("This video exceeds the 750 MB download limit.")
+            if MAX_BYTES and downloaded > MAX_BYTES:
+                raise ValueError("This video exceeds the configured size download limit.")
             percent = min(1, downloaded / total) if total else 0
             progress(8 + int(percent * 15), "Downloading your video…")
 
@@ -99,10 +100,10 @@ def download(url: str, folder: Path, progress, metadata=None) -> tuple[Path, str
             )
         if info.get("is_live"):
             return "Live streams must finish before they can be clipped."
-        if (info.get("duration") or 0) > MAX_DURATION:
-            return "Use a video under 2 hours long."
-        if (info.get("filesize") or info.get("filesize_approx") or 0) > MAX_BYTES:
-            return "Use a video under 750 MB."
+        if MAX_DURATION and (info.get("duration") or 0) > MAX_DURATION:
+            return "Use a video within the configured duration limit."
+        if MAX_BYTES and (info.get("filesize") or info.get("filesize_approx") or 0) > MAX_BYTES:
+            return "Use a video under configured size."
         return None
 
     options = {
@@ -110,7 +111,7 @@ def download(url: str, folder: Path, progress, metadata=None) -> tuple[Path, str
         "outtmpl": str(folder / "source.%(ext)s"),
         "merge_output_format": "mp4",
         "noplaylist": True,
-        "max_filesize": MAX_BYTES,
+        "max_filesize": MAX_BYTES or None,
         "match_filter": accept,
         "progress_hooks": [hook],
         "quiet": True,
@@ -125,8 +126,8 @@ def download(url: str, folder: Path, progress, metadata=None) -> tuple[Path, str
     if not sources:
         raise ValueError("YouTube did not return a downloadable video. Try uploading a local copy.")
     source = max(sources, key=lambda p: p.stat().st_size)
-    if source.stat().st_size > MAX_BYTES:
-        raise ValueError("This video exceeds the 750 MB download limit.")
+    if MAX_BYTES and source.stat().st_size > MAX_BYTES:
+        raise ValueError("This video exceeds the configured size download limit.")
     return source, info.get("title", "YouTube video")
 
 
@@ -145,7 +146,10 @@ def transcribe(source: Path, folder: Path, progress, speed="balanced", scan_seco
     model_name = "tiny" if speed == "fast" else "base"
     if model_name not in _MODELS:
         _MODELS[model_name] = WhisperModel(
-            model_name, device="cpu", compute_type="int8", cpu_threads=min(8, os.cpu_count() or 4)
+            model_name,
+            device=os.getenv("WHISPER_DEVICE", "cpu"),
+            compute_type=os.getenv("WHISPER_COMPUTE_TYPE", "int8"),
+            cpu_threads=min(8, os.cpu_count() or 4),
         )
     started = time.monotonic()
     segments, info = _MODELS[model_name].transcribe(
@@ -196,7 +200,7 @@ def choose_clips(segments: list[dict], duration: float, length: int, count: int)
         start = max(0, first["start"] - 0.12)
         end_limit = min(duration, start + length)
         included = []
-        for segment in segments[i:]:
+        for segment in islice(segments, i, None):
             if segment["start"] >= end_limit:
                 break
             included.append(segment)
@@ -313,6 +317,7 @@ def render(
         filters += f";[v]ass={subtitles.name}[out]"
     else:
         filters += ";[v]null[out]"
+    filters = "[0:v]fps=30[input];" + filters.replace("[0:v]", "[input]")
     if resolution == 720:
         filters = filters.replace("[out]", "[full]") + ";[full]scale=720:1280[out]"
     command = [

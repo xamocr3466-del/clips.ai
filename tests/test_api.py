@@ -6,6 +6,7 @@ from app import main
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLIPSTUDIO_LOCAL_MODE", "1")
     monkeypatch.setattr(main, "DATA", tmp_path)
     monkeypatch.setattr(main, "JOBS", {})
     with TestClient(main.app) as client:

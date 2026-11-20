@@ -2,7 +2,13 @@
 
 # Clipstudio
 
-A free app you run from VS Code to turn YouTube videos or local videos into vertical, captioned clips. No API keys, paid AI subscription, watermark, or cloud processing service is required.
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:d78eea786b12abf4d85e3855b3cf69ee60ffbefdc6e19eff384b1d2d45985111 -->
+
+A video clipping studio with Google-only accounts, one free successfully processed video per account, and optional monthly ($5 USD) or yearly ($60 USD) subscriptions. The verified owner email `xamoxm366@gmail.com` always has free access. Speech recognition runs on your server; processing does not call a paid AI API.
+
+<!-- /coderabbit-ai-generated:v1 -->
 
 <!-- coderabbit-ai-generated:v1 -->
 
@@ -14,9 +20,37 @@ The interface defaults to **Fast** mode. Balanced retains the original base mode
 
 Source cards now show the YouTube thumbnail, title, channel and duration, with a link to watch the original. Metadata appears once YouTube provides it. Thumbnail loading needs access to YouTube image servers. Processing progress shows transcribed audio time and elapsed transcription time. Completed new projects also offer a transcript text download. Old projects remain readable.
 
-To update an existing Windows installation, stop the server with Ctrl+C and replace the `app` folder using the update ZIP. Keep your `.venv` and `data` folders. No new dependencies are required. Restart using the same command and refresh the page with Ctrl+F5. A job already in progress uses the old version until you restart and submit a new job.
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:32505da5b28d5c1c45ae5a187de52b00e41050aa337f2f579aa29e5b37a3de2b -->
+
+For this accounts update, stop the server, replace application files and the dependency manifests, keep your `data` folder, and run `uv sync --frozen --no-dev`. Configure `.env` as described below, then restart with `--env-file .env`. A job already running uses the old version until restart. Older projects without an owner are visible only to the verified owner (or explicit private local mode).
+
+<!-- /coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:0029584fead91a5f2c9d87b5634f9be9460a1dc781f2e5efc4607404c11ef6c6 -->
+
+## Google accounts and payment activation
+
+The UI includes separate **Sign in with Google** and **Sign up with Google** actions using the same secure Google identity flow. There are no email/password accounts. Until Google credentials are supplied, access is closed and the page explains setup is pending. Accounts and entitlements are stored in `data/accounts.sqlite3`; keep this database and `data/session.key` persistent and private. Failed/interrupted jobs refund the trial, while completed jobs permanently consume it, even after project deletion. Trial allowance is per verified Google account, not per person across multiple accounts.
+
+1. Copy `.env.example` to `.env`. In Google Cloud create a Web application OAuth client with the consent screen and redirect URI `http://127.0.0.1:8000/auth/callback` for local use (use your actual HTTPS URL in production). Set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `PUBLIC_URL`. In testing mode add authorized test users. Google handles passwords; never enter a Google password into configuration.
+2. For **private local clipping without accounts/billing**, explicitly set `CLIPSTUDIO_LOCAL_MODE=1`. This grants local access and is not suitable for a public paid site. Default is 0, with authentication required. No fake Google sign-in is provided.
+3. Payments require an eligible payment provider merchant account, account verification, and a receiving bank account. A debit card is not a payout integration. Google Pay is a customer payment method, not a substitute for merchant onboarding. Country and provider eligibility determine support for Google Pay, UPI and recurring payments. This release supplies an optional **Stripe** implementation; if Stripe onboarding is unavailable in your country, choose another provider before launch. There is no manual GPay QR code subscription activation.
+4. In Stripe test mode create two active recurring prices: **500 USD cents per month** and **6000 USD cents per year**, interval count 1. Set both price IDs and `STRIPE_SECRET_KEY`. The backend verifies amounts, currency and interval before opening hosted checkout. Set a webhook endpoint at `<PUBLIC_URL>/api/billing/webhook`, subscribed to `invoice.paid`, `customer.subscription.updated` and `customer.subscription.deleted`; store the signing secret as `STRIPE_WEBHOOK_SECRET`. Enable/configure the Stripe customer portal for cancellation. Then use live keys/price IDs only after account approval and live testing. Do not put secrets in Git or chat.
+5. Server-verified signed payment events grant access until the current paid period ends. Redirecting to the success page never grants access. Expired access is checked on each request; failed payments do not extend access; immediate cancellation revokes access, while cancellation at period end retains the already paid period. The owner email exemption applies only to the address verified by Google.
+
+**Speed:** Fast mode uses a smaller speech model; optional 5/10-minute analysis limits reduce work and coverage. Frame-rate normalization occurs before rendering filters, and highlight selection avoids repeated copying of the remaining transcript. For a compatible NVIDIA server you may set `WHISPER_DEVICE=cuda` and `WHISPER_COMPUTE_TYPE=float16` after installing matching CUDA/cuDNN libraries. GPU operation has not been verified in this CPU sandbox. No fixed 2- or 4-minute turnaround is guaranteed. Downloads, model loading, video length, captions and concurrent demand all affect time. The UI asks users to have patience.
+
+**Integration verification:** tests cover authentication boundaries, verified owner handling, trial persistence/concurrency, private files, stream uploads, signed billing events, replay and cancellation. Real Google/Stripe credentials are still required to validate live accounts/payments. The pinned local emulator catalog supports Stripe checkout primitives but does not implement subscription retrieval/billing portal or the recurring invoice lifecycle; its Google JWKS is empty and it signs with an internal HS256 secret, which cannot satisfy the production Google ID-token verification flow. No verification checks are disabled to make an emulator pass.
+
+References: [Google OpenID Connect](https://developers.google.com/identity/openid-connect/openid-connect), [Stripe account activation](https://docs.stripe.com/get-started/account/activate), [Stripe Google Pay](https://docs.stripe.com/google-pay), [Stripe subscription webhooks](https://docs.stripe.com/billing/subscriptions/webhooks).
 
 ## What it does
+
+<!-- /coderabbit-ai-generated:v1 -->
 
 <!-- /coderabbit-ai-generated:v1 -->
 
@@ -98,7 +132,13 @@ Run in the VS Code terminal:
 
 ```sh
 uv sync --frozen --no-dev
-uv run --no-dev uvicorn app.main:app --host 127.0.0.1 --port 8000
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:f700e7447097c5accadd250b26336a5eece7d1bb7f87c05463553a50fc884aea -->
+
+uv run --no-dev uvicorn app.main:app --env-file .env --host 127.0.0.1 --port 8000
+
+<!-- /coderabbit-ai-generated:v1 -->
 ```
 
 Open **http://127.0.0.1:8000** in your browser. Leave the terminal running. Press **Ctrl+C** to stop it. Next time, only run the second command.
@@ -122,13 +162,25 @@ The first spoken video downloads the selected free model (tiny for Fast mode, ba
 
 ## What “free” and “working” mean
 
-The software uses no paid APIs. Your computer supplies the CPU, memory, disk space, electricity, and internet. There is no included free public hosting service. This is a single-user local app; do not expose port 8000 publicly as a production service. The development Preview runs in its sandbox, rather than your own device.
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:8729f8d2fbf7e5e9903d8dde78478e45a2d1b0132f65b4ce56fa1b19107dbb44 -->
+
+Processing uses your server CPU/GPU, memory, disk space, electricity and internet. There is no included free hosting. Google accounts require OAuth configuration; paid subscriptions require an activated merchant account and incur provider fees. This implementation uses one Uvicorn worker and a local SQLite database; use HTTPS, persistent private storage and a reverse proxy for public deployment. The development Preview runs in its sandbox.
+
+<!-- /coderabbit-ai-generated:v1 -->
 
 No tool can guarantee perfect highlights, accurate captions, or access to every YouTube video. Private, age-restricted, DRM-protected, region-restricted, live, or blocked videos may not download. YouTube can reject a cloud IP or require sign-in. **Upload a local copy when a link fails.** Only reuse videos you own or have permission to use.
 
 The app is best for spoken content, such as podcasts, interviews, and tutorials. It does not perform face tracking, semantic LLM editing, manual timeline editing, or automatic YouTube publishing. Center crop can cut off subjects; fit framing preserves the picture. Silent videos return a single opening excerpt without captions. Shorts can be shorter than your selected maximum, and fewer than the requested number may be available when the source has too few suitable nonoverlapping moments.
 
-Current limits: **750 MB per file/download**, **2 hours per source**, **5 clips per job**, and **3 jobs in the queue**. One job runs at a time to limit CPU and memory use. Use one Uvicorn worker; multiple workers are unsupported. Start with 8 GB RAM and several GB of free disk space; actual needs depend on source length and resolution.
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:6e6201606295d74eabcd35ce33384b6a2f53fd835ff3fbb3f0e79121a6a1447b -->
+
+There is **no fixed application size or duration cap by default**, for the free video as well as paid access. Available server disk space, hosting request limits and processing time still apply. Raw uploads stream directly to disk and reserve 256 MB free space. Set `CLIPSTUDIO_MAX_BYTES` or `CLIPSTUDIO_MAX_DURATION` (seconds) to a positive value to impose an operator limit. There are up to 5 clips per job and 3 queued/active jobs globally. One job runs at a time; use one Uvicorn worker. Resource needs increase with video length and size.
+
+<!-- /coderabbit-ai-generated:v1 -->
 
 ## Files and privacy
 
