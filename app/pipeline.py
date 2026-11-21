@@ -216,7 +216,8 @@ def choose_clips(segments: list[dict], duration: float, length: int, count: int)
         tokens = re.findall(r"\w+", text.lower())
         if not tokens:
             continue
-        distinctive = sum(1 / frequencies[t] for t in set(tokens)) / math.sqrt(len(tokens))
+        # Word-level text may tokenize differently from the full transcript.
+        distinctive = sum(1 / frequencies.get(t, 1) for t in set(tokens)) / math.sqrt(len(tokens))
         hook = bool(
             re.search(
                 r"\b(why|how|secret|mistake|never|imagine|because|discovered|actually)\b",

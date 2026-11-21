@@ -86,6 +86,25 @@ def test_silent_and_short_videos_get_a_bounded_excerpt():
     assert clips[0]["words"] == []
 
 
+def test_highlight_ranking_accepts_words_absent_from_segment_text():
+    # Word timestamps may differ from the segment text returned by Whisper.
+    segment = {
+        "start": 0,
+        "end": 10,
+        "text": "Hello everyone",
+        "words": [
+            {"start": 0, "end": 1, "word": "Hello"},
+            {"start": 1, "end": 3, "word": "every"},
+            {"start": 3, "end": 9, "word": "one"},
+        ],
+    }
+    clips = pipeline.choose_clips([segment], 10, 15, 1)
+    assert len(clips) == 1
+    assert clips[0]["text"] == "Hello every one"
+    assert clips[0]["words"] == segment["words"]
+    assert 0 <= clips[0]["start"] < clips[0]["end"] <= 10
+
+
 def test_subtitles_escape_ass_commands_and_use_clip_relative_times(tmp_path):
     clip = {"start": 10, "end": 20, "words": [{"start": 11, "end": 13, "word": "{\\pos(0,0)}hello\\Nworld"}]}
     output = tmp_path / "test.ass"

@@ -86,3 +86,33 @@ def test_source_metadata_and_transcript_are_persisted(client, monkeypatch):
     assert seen == [(30, "fast", 720)]
     assert client.get(f"/api/jobs/{job['id']}/files/transcript.txt").status_code == 200
     assert not (folder / "source.mp4").exists()
+
+
+def test_job_completes_when_word_timestamps_differ_from_transcript(client, monkeypatch):
+    job = main.new_job("Video", main.Options())
+    source = main.DATA / job["id"] / "upload.mp4"
+    source.write_bytes(b"synthetic")
+    transcript = [
+        {
+            "start": 0,
+            "end": 10,
+            "text": "hello everyone",
+            "words": [
+                {"start": 0, "end": 4, "word": "hello"},
+                {"start": 4, "end": 9, "word": "every"},
+            ],
+        }
+    ]
+    monkeypatch.setattr(main.pipeline, "probe", lambda source: {"duration": 10, "audio": True})
+    monkeypatch.setattr(main.pipeline, "transcribe", lambda *args: transcript)
+    rendered = []
+
+    def render(source, clip, *args):
+        rendered.append(clip)
+        return {"file": "clip-01.mp4", "poster": "clip-01.jpg"}
+
+    monkeypatch.setattr(main.pipeline, "render", render)
+    main.process(job["id"], source=source)
+    assert client.get(f"/api/jobs/{job['id']}").json()["status"] == "completed"
+    assert rendered[0]["text"] == "hello every"
+    assert rendered[0]["words"] == transcript[0]["words"]
