@@ -7,6 +7,7 @@ import re
 import secrets
 import shutil
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -90,8 +91,33 @@ def save(job_id: str, **changes):
         JOBS[job_id].update(changes)
         folder = DATA / job_id
         temp = folder / "job.tmp"
-        temp.write_text(json.dumps(JOBS[job_id]), encoding="utf-8")
-        temp.replace(folder / "job.json")
+        for attempt in range(8):
+            try:
+                temp.write_text(json.dumps(JOBS[job_id]), encoding="utf-8")
+                temp.replace(folder / "job.json")
+                break
+            except PermissionError:
+                if attempt == 7:
+                    raise
+                # Windows may temporarily lock either file while scanning it.
+                time.sleep(min(0.05 * (2**attempt), 1))
+
+
+def caused_by_permission_error(error: BaseException) -> bool:
+    pending = [error]
+    seen = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, PermissionError):
+            return True
+        if current.__cause__ is not None:
+            pending.append(current.__cause__)
+        if current.__context__ is not None:
+            pending.append(current.__context__)
+    return False
 
 
 def new_job(title: str, options: Options, user=None) -> dict:
@@ -131,7 +157,10 @@ def process(job_id: str, url: str | None = None, source: Path | None = None):
     folder = DATA / job_id
 
     def progress(value, message):
-        save(job_id, progress=value, message=message)
+        with LOCK:
+            job = JOBS[job_id]
+            if job["progress"] != value or job["message"] != message:
+                save(job_id, progress=value, message=message)
 
     def metadata(**values):
         save(job_id, **values)
@@ -183,7 +212,12 @@ def process(job_id: str, url: str | None = None, source: Path | None = None):
         )
     except Exception as error:
         logger.exception("Processing failed for %s", job_id)
-        if url and source is None:
+        if caused_by_permission_error(error):
+            message = (
+                "Couldn't access the project files. Close programs using the files, "
+                "check folder permissions, and try again."
+            )
+        elif url and source is None:
             message = (
                 "YouTube couldn't provide this video. It may require sign-in, be restricted, or block downloads. "
                 "Upload a local copy of the video, or try another public link."

@@ -1,3 +1,7 @@
+import json
+import time
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -49,6 +53,147 @@ def test_restart_marks_interrupted_jobs_failed(client):
         restored = restarted.get(f"/api/jobs/{job['id']}").json()
         assert restored["status"] == "failed"
         assert "restarted" in restored["message"]
+
+
+def test_save_retries_transient_access_denials(client, monkeypatch):
+    job = main.new_job("Video", main.Options())
+    manifest = main.DATA / job["id"] / "job.json"
+    old = json.loads(manifest.read_text(encoding="utf-8"))
+    replace = Path.replace
+    attempts = []
+
+    def temporarily_locked(path, target):
+        attempts.append(1)
+        if len(attempts) <= 2:
+            assert json.loads(manifest.read_text(encoding="utf-8")) == old
+            raise PermissionError("The file is in use")
+        return replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", temporarily_locked)
+    monkeypatch.setattr(time, "sleep", lambda _: None)
+    main.save(job["id"], progress=20, message="Downloading your video…")
+    assert len(attempts) == 3
+    assert json.loads(manifest.read_text(encoding="utf-8"))["progress"] == 20
+
+
+def test_save_retries_when_temporary_file_cannot_be_opened(client, monkeypatch):
+    job = main.new_job("Video", main.Options())
+    write_text = Path.write_text
+    attempts = []
+
+    def temporarily_locked(path, *args, **kwargs):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise PermissionError("The file is in use")
+        return write_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", temporarily_locked)
+    monkeypatch.setattr(time, "sleep", lambda _: None)
+    main.save(job["id"], progress=20)
+    assert len(attempts) == 2
+    manifest = main.DATA / job["id"] / "job.json"
+    assert json.loads(manifest.read_text(encoding="utf-8"))["progress"] == 20
+
+
+def test_save_propagates_persistent_access_denial_without_corrupting_manifest(client, monkeypatch):
+    job = main.new_job("Video", main.Options())
+    manifest = main.DATA / job["id"] / "job.json"
+    original = manifest.read_bytes()
+    attempts = []
+
+    def locked(path, target):
+        attempts.append(1)
+        raise PermissionError("The file is in use")
+
+    monkeypatch.setattr(Path, "replace", locked)
+    monkeypatch.setattr(time, "sleep", lambda _: None)
+    with pytest.raises(PermissionError):
+        main.save(job["id"], progress=20)
+    assert 1 < len(attempts) <= 10
+    assert manifest.read_bytes() == original
+
+
+def test_wrapped_permission_error_reports_file_access_problem(client, monkeypatch):
+    job = main.new_job("Video", main.Options())
+
+    def blocked_download(*args, **kwargs):
+        try:
+            raise PermissionError("The file is in use")
+        except PermissionError as exc:
+            raise RuntimeError("Download failed") from exc
+
+    monkeypatch.setattr(main.pipeline, "download", blocked_download)
+    main.process(job["id"], url="https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+    result = client.get(f"/api/jobs/{job['id']}").json()
+    assert result["status"] == "failed"
+    assert "file" in result["message"].lower()
+    assert "YouTube couldn't provide" not in result["message"]
+
+
+def test_download_continues_after_manifest_temporarily_locked(client, monkeypatch):
+    job = main.new_job("Video", main.Options())
+    replace = Path.replace
+    attempts = []
+    downloading = False
+
+    def locked_during_download(path, target):
+        if downloading:
+            attempts.append(1)
+            if len(attempts) <= 2:
+                raise PermissionError("The file is in use")
+        return replace(path, target)
+
+    def download(url, folder, progress, metadata):
+        nonlocal downloading
+        downloading = True
+        try:
+            progress(8, "Downloading your video…")
+        except PermissionError as exc:
+            raise RuntimeError("Download failed") from exc
+        finally:
+            downloading = False
+        source = folder / "source.mp4"
+        source.write_bytes(b"synthetic")
+        return source, "Video"
+
+    monkeypatch.setattr(Path, "replace", locked_during_download)
+    monkeypatch.setattr(time, "sleep", lambda _: None)
+    monkeypatch.setattr(main.pipeline, "download", download)
+    monkeypatch.setattr(main.pipeline, "probe", lambda source: {"duration": 10, "audio": False})
+    monkeypatch.setattr(
+        main.pipeline, "render", lambda *args: {"file": "clip-01.mp4", "poster": "clip-01.jpg"}
+    )
+    main.process(job["id"], url="https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+    assert len(attempts) == 3
+    assert client.get(f"/api/jobs/{job['id']}").json()["status"] == "completed"
+
+
+def test_duplicate_download_progress_is_not_rewritten(client, monkeypatch):
+    job = main.new_job("Video", main.Options())
+    actual_save = main.save
+    saves = []
+
+    def track_save(job_id, **changes):
+        if changes.get("message") == "Downloading your video…":
+            saves.append(changes["progress"])
+        return actual_save(job_id, **changes)
+
+    def download(url, folder, progress, metadata):
+        for value in (8, 8, 8, 9, 9):
+            progress(value, "Downloading your video…")
+        source = folder / "source.mp4"
+        source.write_bytes(b"synthetic")
+        return source, "Video"
+
+    monkeypatch.setattr(main, "save", track_save)
+    monkeypatch.setattr(main.pipeline, "download", download)
+    monkeypatch.setattr(main.pipeline, "probe", lambda source: {"duration": 10, "audio": False})
+    monkeypatch.setattr(
+        main.pipeline, "render", lambda *args: {"file": "clip-01.mp4", "poster": "clip-01.jpg"}
+    )
+    main.process(job["id"], url="https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+    assert client.get(f"/api/jobs/{job['id']}").json()["status"] == "completed"
+    assert saves == [8, 9]
 
 
 def test_speed_options_reject_invalid_settings(client):
