@@ -87,7 +87,21 @@ See [Razorpay QR API](https://razorpay.com/docs/api/qr-codes/create/), [QR webho
 - Offers a blurred background that keeps the whole picture, or a center crop.
 - Shows real processing progress, video previews, downloads, and saved project history.
 
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:b1ed90a46e4a7a56ae1b0d307e157c0b710777eea510c7de364bdc8ee2d22742 -->
+
+## Vercel website preview
+
+`vercel.json` deploys only the static website from `app/static`; the FastAPI service is not deployed. The preview displays a notice and disables sign-in and clip creation until a video service is connected. No existing database, processing jobs, Google sign-in, or payment integration are hosted by this static preview. Local VS Code use is unchanged.
+
+To make the public site functional, run the application on a suitable server with FFmpeg, durable storage, a working queue, HTTPS, and a public address; connect `/api` and `/auth` to that server with a same-origin reverse proxy. Configure Google OAuth and payment webhooks for the actual HTTPS address. Vercel Functions have upload, duration and filesystem limits, so the current local worker and SQLite design cannot be deployed unchanged as a working public clip service.
+
+Vercel Hobby is for personal, non-commercial use. Verify the provider plan and terms before using the site for paid plans. See [Vercel project configuration](https://vercel.com/docs/project-configuration/vercel-json), [function limits](https://vercel.com/docs/functions/limitations), and [Vercel terms](https://vercel.com/legal/terms).
+
 ## Start in VS Code
+
+<!-- /coderabbit-ai-generated:v1 -->
 
 ### 1. Install the tools once
 

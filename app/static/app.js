@@ -154,8 +154,19 @@ $('#create-form').addEventListener('submit', async (event) => {
 });
 async function init() {
   updateCount();
-  config = await api('/api/config');
-  account = await api('/api/me');
+  try {
+    config = await api('/api/config');
+    account = await api('/api/me');
+  } catch {
+    $('#auth-gate').hidden = false;
+    $('#auth-note').textContent = 'This is a preview. The video service is not connected yet.';
+    $('#system-status').textContent = 'Video service not connected';
+    $('#auth-plans').hidden = true;
+    $('#generate-button').disabled = true;
+    $('.app-shell').inert = true;
+    ['#google-signin','#google-signup'].forEach(id => { $(id).removeAttribute('href'); $(id).setAttribute('aria-disabled','true'); });
+    return;
+  }
   if (!account) {
     $('#auth-gate').hidden = false;
     $('#auth-note').textContent = config.google_ready ? 'One Google account. No separate password needed.' : 'Google sign-in is being set up. Please check back soon.';
