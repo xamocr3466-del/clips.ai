@@ -413,6 +413,16 @@ async def require_account(request: Request, call_next):
     return await call_next(request)
 
 
+@app.middleware("http")
+async def prevent_private_caching(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith(("/api/", "/auth/")):
+        response.headers["Cache-Control"] = "private, no-store"
+        response.headers["CDN-Cache-Control"] = "no-store"
+        response.headers["Vercel-CDN-Cache-Control"] = "no-store"
+    return response
+
+
 @app.get("/api/config")
 def config():
     return {

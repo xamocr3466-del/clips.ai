@@ -1,0 +1,10 @@
+{$BACKEND_DOMAIN} {
+	encode gzip
+	@backend path /api/* /auth/*
+	handle @backend {
+		reverse_proxy api:8000
+	}
+	handle {
+		respond "Not found" 404
+	}
+}

@@ -47,6 +47,19 @@ def test_google_only_fail_closed_and_verified_owner(client):
     assert client.get("/api/me").json()["unlimited"] is True
 
 
+def test_account_and_auth_responses_are_never_cached(client):
+    for path in ("/api/config", "/api/me", "/api/jobs", "/auth/google"):
+        response = client.get(path, follow_redirects=False)
+        assert response.headers["cache-control"] == "private, no-store"
+        assert response.headers["vercel-cdn-cache-control"] == "no-store"
+    user()
+    login(client, "alice")
+    response = client.get("/api/jobs")
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "private, no-store"
+    assert response.headers["cdn-cache-control"] == "no-store"
+
+
 def test_trial_cannot_be_reset_by_deleting_project(client):
     alice = user()
     login(client, "alice")

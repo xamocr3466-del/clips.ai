@@ -99,7 +99,27 @@ To make the public site functional, run the application on a suitable server wit
 
 Vercel Hobby is for personal, non-commercial use. Verify the provider plan and terms before using the site for paid plans. See [Vercel project configuration](https://vercel.com/docs/project-configuration/vercel-json), [function limits](https://vercel.com/docs/functions/limitations), and [Vercel terms](https://vercel.com/legal/terms).
 
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:e428e91ed9750a1c4b6fde2e424ff9985d3303ac44e44c300831caf7c84f5c47 -->
+
+## Cloud video server
+
+The Vercel site is a static preview until a separately hosted video server is available. `Dockerfile`, `compose.yaml` and `Caddyfile` prepare one Linux server with FFmpeg, Node.js, the existing app, persistent named volumes, and an HTTPS reverse proxy. The app and its database remain a **single-worker, single-server** service. Docker volumes persist across container restarts but are not backups; back up the database, session key, exports and configuration securely. The Vercel Hobby plan is for personal or non-commercial use.
+
+A real deployment still needs a suitable provider account, Linux server, DNS hostname pointing at that server, inbound ports 80/443, and Docker with Compose. Oracle Always Free capacity and account eligibility are not guaranteed; use only resources labelled Always Free if avoiding charges. Actual ARM hardware and production TLS have not been verified here.
+
+Once a server and hostname exist, copy `.env.example` to `.env` **only if `.env` does not already exist**. Keep it private. Set `BACKEND_DOMAIN` to the server hostname without `https://`; set `PUBLIC_URL` to the Vercel site URL, and configure your Google client ID and secret privately. Add `<PUBLIC_URL>/auth/callback` to the Google OAuth client's authorized redirect URIs. Keep the app in Google test mode until you are ready to publish, with your own email added as a test user. The Compose configuration forces private local mode off for public servers.
+
+Run `docker compose up -d --build` on the server. Check `docker compose ps` and `https://<BACKEND_DOMAIN>/api/health`; HTTPS certificates require working DNS and public port access. `CLIPSTUDIO_DATA` and model-cache data use named volumes. Do not delete them while they contain data you need.
+
+Only after the server is reachable, connect Vercel with same-origin rewrites in `vercel.json`: route `/api/:path*` and `/auth/:path*` to `https://<BACKEND_DOMAIN>/api/:path*` and `https://<BACKEND_DOMAIN>/auth/:path*` respectively, then redeploy. Keep the current static-only configuration until the real backend address is known. API and auth responses use private no-store headers for proxy safety. Vercel's external rewrite timeout and provider upload limits can affect large uploads; validate actual limits before release.
+
+The container was tested locally using a synthetic upload and export, not on Oracle. YouTube blocked a test download from this sandbox with a bot check, so public-cloud YouTube links cannot be guaranteed; test from the actual server. Payment activation separately requires an approved Razorpay merchant account, a public webhook and provider testing. Refunds need manual review. Do not expose local mode or put credentials in source control.
+
 ## Start in VS Code
+
+<!-- /coderabbit-ai-generated:v1 -->
 
 <!-- /coderabbit-ai-generated:v1 -->
 

@@ -1,0 +1,40 @@
+services:
+  api:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      CLIPSTUDIO_DATA: /var/lib/clipstudio
+      HF_HOME: /var/lib/clipstudio-models
+      CLIPSTUDIO_LOCAL_MODE: "0"
+    volumes:
+      - clipstudio-data:/var/lib/clipstudio
+      - clipstudio-models:/var/lib/clipstudio-models
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+  https:
+    image: caddy:2.10.2
+    restart: unless-stopped
+    environment:
+      BACKEND_DOMAIN: ${BACKEND_DOMAIN:?Set BACKEND_DOMAIN to your server hostname in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+volumes:
+  clipstudio-data:
+  clipstudio-models:
+  caddy-data:
+  caddy-config:
