@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -174,6 +175,9 @@ def test_mispriced_checkout_cannot_charge_customer(client, monkeypatch):
         return {"unit_amount": 5000, "currency": "usd", "recurring": {"interval": "month"}, "active": True}
 
     monkeypatch.setattr(billing, "stripe", stripe)
-    assert client.post("/api/billing/checkout", json={"plan": "monthly"}).status_code == 503
+    assert client.post("/api/billing/checkout", json={"plan": "monthly"}).status_code == 410
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(billing.checkout({"id": "alice", "email": "alice@example.com"}, "monthly"))
+    assert error.value.status_code == 503
     assert len(calls) == 1 and calls[0][0] == "GET"
     assert client.get("/api/me").json()["unlimited"] is False

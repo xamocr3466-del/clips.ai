@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 from starlette.middleware.sessions import SessionMiddleware
 
-from app import accounts, billing, pipeline
+from app import accounts, billing, pipeline, qr_billing
 
 ROOT = Path(__file__).resolve().parent
 DATA = Path(os.environ.get("CLIPSTUDIO_DATA", ROOT.parent / "data")).resolve()
@@ -36,6 +36,7 @@ logger = logging.getLogger("clipstudio")
 @asynccontextmanager
 async def lifespan(app):
     accounts.configure(DATA)
+    qr_billing.configure()
     for path in DATA.glob("*/job.json"):
         try:
             job = json.loads(path.read_text())
@@ -374,8 +375,17 @@ def owns(user, job):
 
 @app.middleware("http")
 async def require_account(request: Request, call_next):
-    public = {"/api/health", "/api/me", "/api/config", "/api/billing/webhook"}
-    if request.method in {"POST", "PUT", "DELETE"} and request.url.path != "/api/billing/webhook":
+    public = {
+        "/api/health",
+        "/api/me",
+        "/api/config",
+        "/api/billing/webhook",
+        "/api/billing/razorpay/webhook",
+    }
+    if request.method in {"POST", "PUT", "DELETE"} and request.url.path not in {
+        "/api/billing/webhook",
+        "/api/billing/razorpay/webhook",
+    }:
         origin = request.headers.get("origin")
         expected = os.getenv("PUBLIC_URL", str(request.base_url)).rstrip("/")
         if origin and origin != expected:
@@ -408,12 +418,12 @@ def config():
     return {
         "google_ready": accounts.google_ready(),
         "local_mode": accounts.local_mode(),
-        "payments_ready": billing.ready(),
+        "payments_ready": qr_billing.ready(),
         "max_bytes": pipeline.MAX_BYTES,
         "max_duration": pipeline.MAX_DURATION,
         "plans": [
-            {"id": "monthly", "price": 5, "period": "month"},
-            {"id": "yearly", "price": 60, "period": "year"},
+            {"id": "monthly", "price": 100, "currency": "INR", "period": "month"},
+            {"id": "yearly", "price": 1000, "currency": "INR", "period": "year"},
         ],
     }
 
@@ -470,7 +480,27 @@ class CheckoutRequest(BaseModel):
 
 @app.post("/api/billing/checkout")
 async def checkout(payload: CheckoutRequest, request: Request):
-    return await billing.checkout(request.state.user, payload.plan)
+    raise HTTPException(410, "This checkout is no longer available. Choose an INR plan.")
+
+
+@app.post("/api/billing/qr")
+async def create_qr(payload: CheckoutRequest, request: Request):
+    return await qr_billing.create(request.state.user, payload.plan)
+
+
+@app.get("/api/billing/qr/{attempt_id}")
+def qr_status(attempt_id: str, request: Request):
+    return qr_billing.status(request.state.user, attempt_id)
+
+
+@app.post("/api/billing/razorpay/webhook")
+async def qr_event(request: Request):
+    body = bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body) > 1024 * 1024:
+            raise HTTPException(413, "Webhook too large.")
+    return qr_billing.webhook(bytes(body), request.headers.get("x-razorpay-signature", ""))
 
 
 @app.post("/api/billing/portal")

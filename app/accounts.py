@@ -26,6 +26,9 @@ def configure(folder):
         CREATE TABLE IF NOT EXISTS usage (job TEXT PRIMARY KEY, uid TEXT NOT NULL, state TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY);
         """)
+        columns = {row["name"] for row in db.execute("PRAGMA table_info(users)")}
+        if "qr_paid_until" not in columns:
+            db.execute("ALTER TABLE users ADD COLUMN qr_paid_until INTEGER NOT NULL DEFAULT 0")
 
 
 @contextmanager
@@ -96,7 +99,7 @@ def current(request: Request):
         return None
     result = dict(row)
     result["owner"] = result["email"] == OWNER_EMAIL
-    result["unlimited"] = result["owner"] or result["paid_until"] > time.time()
+    result["unlimited"] = result["owner"] or max(result["paid_until"], result["qr_paid_until"]) > time.time()
     return result
 
 
@@ -125,6 +128,8 @@ def summary(user):
         used = db.execute(
             "SELECT count(*) FROM usage WHERE uid=? AND state IN ('reserved','completed')", (user["id"],)
         ).fetchone()[0]
-    return {k: user.get(k) for k in ("id", "email", "name", "owner", "unlimited", "local", "paid_until")} | {
-        "trial_available": not bool(used)
+    return {k: user.get(k) for k in ("id", "email", "name", "owner", "unlimited", "local")} | {
+        "paid_until": max(user.get("paid_until") or 0, user.get("qr_paid_until") or 0),
+        "trial_available": not bool(used),
+        "has_subscription": bool(user.get("subscription")),
     }

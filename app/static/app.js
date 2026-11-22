@@ -165,6 +165,7 @@ async function init() {
     return;
   }
   await updateAccount();
+  try { const saved=JSON.parse(sessionStorage.getItem('clipstudio-qr')); if (saved?.id) openQR(saved); } catch { sessionStorage.removeItem('clipstudio-qr'); }
   await refresh();
   try {
     const health = await api('/api/health');
@@ -177,23 +178,56 @@ async function updateAccount() {
   account = await api('/api/me');
   if (!account) { location.reload(); return; }
   $('#account-label').textContent = account.local ? 'PRIVATE LOCAL MODE' : account.name;
-  $('#access-status').textContent = account.owner ? 'Owner account · always free' : account.local ? 'Private local mode · no billing' : account.unlimited ? 'Subscription active · keep creating' : account.trial_available ? 'Your first video is on us.' : 'Trial complete. Choose your plan.';
+  $('#access-status').textContent = account.owner ? 'Owner account · always free' : account.local ? 'Private local mode · no billing' : account.unlimited ? 'Premium active · keep creating' : account.trial_available ? 'Your first video is on us.' : 'Trial complete. Choose your plan.';
   $('#signout-button').hidden = !!account.local;
 }
 function showPlans() {
-  $('#billing-note').textContent = account?.owner ? 'Your verified owner account is free, with no subscription needed.' : config.payments_ready ? 'Secure hosted checkout. Payments are confirmed by our server.' : 'Payments are not activated yet. Please check back soon.';
+  $('#billing-note').textContent = account?.owner ? 'Your verified owner account is free, with no subscription needed.' : config.payments_ready ? 'Scan a UPI QR to pay. Premium activates after payment is confirmed.' : 'Payments are not activated yet. Please check back soon.';
   document.querySelectorAll('[data-plan]').forEach(button=>button.disabled = !config.payments_ready || !!account?.unlimited || !!account?.local);
-  $('#manage-subscription').hidden = !account?.paid_until;
+  $('#manage-subscription').hidden = !account?.has_subscription;
   $('#pricing-dialog').showModal();
 }
 ['#plans-button','#sidebar-plans','#auth-plans'].forEach(id=>$(id).onclick=showPlans);
 $('#manage-subscription').onclick=async()=>{try{const r=await api('/api/billing/portal',{method:'POST'});location.href=r.url;}catch(e){toast(e.message);}};
 $('#close-pricing').onclick=()=>$('#pricing-dialog').close();
 $('#signout-button').onclick=async()=>{await api('/api/logout',{method:'POST'});location.reload();};
+let qrCurrent = null;
+let qrTimer = null;
+let qrPolling = false;
+async function updateQR() {
+  if (!qrCurrent || qrPolling) return;
+  const remaining = Math.max(0, Math.ceil(qrCurrent.expires - Date.now()/1000));
+  $('#qr-countdown').textContent = remaining ? `Expires in ${Math.floor(remaining/60)}:${String(remaining%60).padStart(2,'0')}` : 'QR expired';
+  if (!remaining) { $('#qr-image').hidden = true; $('.qr-image-wrap').hidden = true; $('#new-qr').hidden = false; $('#qr-status').textContent = 'This QR has expired. Choose a new one to pay.'; }
+  if (qrCurrent.nextPoll > Date.now()) return;
+  qrPolling = true; qrCurrent.nextPoll = Date.now() + 3000;
+  try {
+    const current = await api(`/api/billing/qr/${encodeURIComponent(qrCurrent.id)}`);
+    if (current.status === 'paid') {
+      clearInterval(qrTimer); qrCurrent = null; sessionStorage.removeItem('clipstudio-qr');
+      $('#qr-image').hidden = true; $('.qr-image-wrap').hidden = true; $('#qr-countdown').textContent = '';
+      $('#qr-status').textContent = 'Premium activated!'; $('#new-qr').hidden = true;
+      await updateAccount();
+    }
+  } catch (error) { $('#qr-status').textContent = `Waiting for confirmation. ${error.message}`; }
+  finally { qrPolling = false; }
+}
+function openQR(result) {
+  qrCurrent = {...result, nextPoll:0};
+  sessionStorage.setItem('clipstudio-qr', JSON.stringify(result));
+  $('#qr-title').textContent = `Pay ₹${(result.amount/100).toLocaleString('en-IN')} · ${result.plan === 'monthly' ? 'one month' : 'one year'}`;
+  $('#qr-image').src = result.image_url; $('#qr-image').hidden = false; $('.qr-image-wrap').hidden = false;
+  $('#new-qr').hidden = true; $('#qr-status').textContent = 'Waiting for payment confirmation…';
+  if ($('#pricing-dialog').open) $('#pricing-dialog').close();
+  if (!$('#qr-dialog').open) $('#qr-dialog').showModal();
+  clearInterval(qrTimer); updateQR(); qrTimer = setInterval(updateQR, 1000);
+}
+$('#close-qr').onclick=()=>$('#qr-dialog').close();
+$('#new-qr').onclick=()=>{ clearInterval(qrTimer); qrCurrent=null; sessionStorage.removeItem('clipstudio-qr'); $('#qr-dialog').close(); showPlans(); };
 document.querySelectorAll('[data-plan]').forEach(button=>button.onclick=async()=>{
   if (!account) { location.href='/auth/google'; return; }
   button.disabled=true;
-  try { const result=await api('/api/billing/checkout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({plan:button.dataset.plan})});location.href=result.url; }
+  try { const result=await api('/api/billing/qr',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({plan:button.dataset.plan})}); openQR(result); }
   catch(error) { toast(error.message);button.disabled=false; }
 });
 if (new URLSearchParams(location.search).get('login') === 'failed') toast('Google sign-in could not finish. Please try again.');

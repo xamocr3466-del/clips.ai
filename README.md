@@ -6,7 +6,13 @@
 
 <!-- coderabbit-ai-generated-section:v1:d78eea786b12abf4d85e3855b3cf69ee60ffbefdc6e19eff384b1d2d45985111 -->
 
-A video clipping studio with Google-only accounts, one free successfully processed video per account, and optional monthly ($5 USD) or yearly ($60 USD) subscriptions. The verified owner email `xamoxm366@gmail.com` always has free access. Speech recognition runs on your server; processing does not call a paid AI API.
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:e0054e2f3e1a0dc439000e165b9ed8487240108a3c41e3ebbc5f60bdb09c7b6c -->
+
+A video clipping studio with Google-only accounts, one free successfully processed video per account, and INR plans: ₹100 for one month or ₹1,000 for one year. The verified owner email `xamoxm366@gmail.com` always has free access. Speech recognition runs on your server; processing does not call a paid AI API.
+
+<!-- /coderabbit-ai-generated:v1 -->
 
 <!-- /coderabbit-ai-generated:v1 -->
 
@@ -32,23 +38,30 @@ For this accounts update, stop the server, replace application files and the dep
 
 <!-- coderabbit-ai-generated-section:v1:0029584fead91a5f2c9d87b5634f9be9460a1dc781f2e5efc4607404c11ef6c6 -->
 
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:42b2404f4092f7de1c4bb98222940a6e59b6e0606b6d72210993bd8245e4d409 -->
+
 ## Google accounts and payment activation
 
-The UI includes separate **Sign in with Google** and **Sign up with Google** actions using the same secure Google identity flow. There are no email/password accounts. Until Google credentials are supplied, access is closed and the page explains setup is pending. Accounts and entitlements are stored in `data/accounts.sqlite3`; keep this database and `data/session.key` persistent and private. Failed/interrupted jobs refund the trial, while completed jobs permanently consume it, even after project deletion. Trial allowance is per verified Google account, not per person across multiple accounts.
+Google sign-in and your verified owner account work as before. Accounts and entitlements are stored in `data/accounts.sqlite3`; keep this database and `data/session.key` persistent and private. Your first successfully processed video is free for other Google accounts.
 
-1. Copy `.env.example` to `.env`. In Google Cloud create a Web application OAuth client with the consent screen and redirect URI `http://127.0.0.1:8000/auth/callback` for local use (use your actual HTTPS URL in production). Set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `PUBLIC_URL`. In testing mode add authorized test users. Google handles passwords; never enter a Google password into configuration.
-2. For **private local clipping without accounts/billing**, explicitly set `CLIPSTUDIO_LOCAL_MODE=1`. This grants local access and is not suitable for a public paid site. Default is 0, with authentication required. No fake Google sign-in is provided.
-3. Payments require an eligible payment provider merchant account, account verification, and a receiving bank account. A debit card is not a payout integration. Google Pay is a customer payment method, not a substitute for merchant onboarding. Country and provider eligibility determine support for Google Pay, UPI and recurring payments. This release supplies an optional **Stripe** implementation; if Stripe onboarding is unavailable in your country, choose another provider before launch. There is no manual GPay QR code subscription activation.
-4. In Stripe test mode create two active recurring prices: **500 USD cents per month** and **6000 USD cents per year**, interval count 1. Set both price IDs and `STRIPE_SECRET_KEY`. The backend verifies amounts, currency and interval before opening hosted checkout. Set a webhook endpoint at `<PUBLIC_URL>/api/billing/webhook`, subscribed to `invoice.paid`, `customer.subscription.updated` and `customer.subscription.deleted`; store the signing secret as `STRIPE_WEBHOOK_SECRET`. Enable/configure the Stripe customer portal for cancellation. Then use live keys/price IDs only after account approval and live testing. Do not put secrets in Git or chat.
-5. Server-verified signed payment events grant access until the current paid period ends. Redirecting to the success page never grants access. Expired access is checked on each request; failed payments do not extend access; immediate cancellation revokes access, while cancellation at period end retains the already paid period. The owner email exemption applies only to the address verified by Google.
+New purchases cost **₹100 for one month** or **₹1,000 for one year**. Each is a one-time payment; customers renew with a new payment. Existing Stripe subscriptions and their webhooks remain available for legacy subscribers. New USD checkouts are disabled.
 
-**Speed:** Fast mode uses a smaller speech model; optional 5/10-minute analysis limits reduce work and coverage. Frame-rate normalization occurs before rendering filters, and highlight selection avoids repeated copying of the remaining transcript. For a compatible NVIDIA server you may set `WHISPER_DEVICE=cuda` and `WHISPER_COMPUTE_TYPE=float16` after installing matching CUDA/cuDNN libraries. GPU operation has not been verified in this CPU sandbox. No fixed 2- or 4-minute turnaround is guaranteed. Downloads, model loading, video length, captions and concurrent demand all affect time. The UI asks users to have patience.
+To activate INR payments:
 
-**Integration verification:** tests cover authentication boundaries, verified owner handling, trial persistence/concurrency, private files, stream uploads, signed billing events, replay and cancellation. Real Google/Stripe credentials are still required to validate live accounts/payments. The pinned local emulator catalog supports Stripe checkout primitives but does not implement subscription retrieval/billing portal or the recurring invoice lifecycle; its Google JWKS is empty and it signs with an internal HS256 secret, which cannot satisfy the production Google ID-token verification flow. No verification checks are disabled to make an emulator pass.
+1. Apply for an approved Razorpay merchant account and request dynamic single-use UPI QR access. An ordinary Google Pay QR cannot confirm or enforce expiry for the app. Razorpay UPI QR is for supported Indian UPI apps and does not accept international payments.
+2. Set `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`, and a public HTTPS `PUBLIC_URL` privately in `.env`. Keep existing Stripe settings for any existing subscriptions.
+3. Configure a Razorpay webhook at `<PUBLIC_URL>/api/billing/razorpay/webhook` for `qr_code.credited`. Localhost cannot receive provider webhooks; a public HTTPS service or a provider-supported tunnel is needed.
+4. Test with Razorpay test credentials before accepting real payments. Test QR codes cannot be scanned with regular UPI apps. The app checks signed captured events and their exact amount, currency, QR identity and payment time; a scan or browser callback cannot activate access. QR payments are separate from legacy Stripe entitlements. Refunds require manual review and are not automatically reflected in access.
 
-References: [Google OpenID Connect](https://developers.google.com/identity/openid-connect/openid-connect), [Stripe account activation](https://docs.stripe.com/get-started/account/activate), [Stripe Google Pay](https://docs.stripe.com/google-pay), [Stripe subscription webhooks](https://docs.stripe.com/billing/subscriptions/webhooks).
+The pinned local emulator catalog has no Razorpay QR service. Tests use synthetic provider responses; actual QR scanning, webhook delivery and settlement have not been verified. The merchant account and feature require provider approval.
+
+See [Razorpay QR API](https://razorpay.com/docs/api/qr-codes/create/), [QR webhooks](https://razorpay.com/docs/webhooks/qr-codes/), and [signature verification](https://razorpay.com/docs/webhooks/validate-test/).
 
 ## What it does
+
+<!-- /coderabbit-ai-generated:v1 -->
 
 <!-- /coderabbit-ai-generated:v1 -->
 
